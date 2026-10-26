@@ -1,0 +1,29 @@
+{
+  "name": "hermes-ai-bot",
+  "version": "1.0.0",
+  "description": "Hermes AI Assistant powered by OpenRouter (Nous Hermes), with Telegram and Discord connectors",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "keywords": [
+    "hermes",
+    "openrouter",
+    "ai",
+    "telegram-bot",
+    "discord-bot",
+    "nous-research"
+  ],
+  "author": "Antigravity",
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^1.7.9",
+    "cors": "^2.8.5",
+    "discord.js": "^14.16.3",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "puppeteer": "^24.3.0",
+    "telegraf": "^4.16.3"
+  }
+}
