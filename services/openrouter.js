@@ -6,6 +6,140 @@ const vpsTools = require('./vpsTools');
 
 const statsFilePath = path.join(__dirname, '../data/token_stats.json');
 
+// Urutan Kasta Model Gemini (5h) dari kasta tertinggi ke bawah
+// 9Router akan me-rolling seluruh 5 akun Antigravity di tiap kasta sebelum turun ke kasta berikutnya
+const GEMINI_5H_TIER_MODELS = [
+  'ag/gemini-3-flash',            // Kasta 1 (Terbaik - Default Gemini 5h)
+  'ag/gemini-2.5-flash-thinking', // Kasta 2 (Gemini Flash Thinking)
+  'ag/gemini-2.5-flash',          // Kasta 3 (Gemini Flash Standard)
+  'ag/gemini-3.5-flash-lite',     // Kasta 4 (Gemini 3.5 Flash Lite - Sangat Cepat)
+  'ag/gemini-3.1-flash-lite',     // Kasta 5 (Gemini 3.1 Flash Lite)
+  'ag/gemini-3.8-flash',          // Kasta 6 (Gemini 3.8 Flash jika kapasitas pulih)
+  'cx/gpt-6-luna',                // Kasta 7 (Cadangan Codex Multi-Account)
+  'ag/claude-sonnet-4-6'          // Kasta 8 (Cadangan Claude)
+];
+
+// Urutan Kasta Model Claude (Aktif otomatis jika user meminta Claude di prompt)
+const CLAUDE_TIER_MODELS = [
+  'ag/claude-sonnet-4-6',         // Kasta 1 Claude: Sonnet 4.6 Thinking
+  'ag/claude-opus-4-6-thinking',  // Kasta 2 Claude: Opus 4.6 Thinking
+  'ag/gemini-3-flash',            // Fallback ke Gemini (5h) jika kuota Claude habis di semua akun
+  'cx/gpt-6-luna'
+];
+
+/**
+ * Deteksi dinamis apakah user meminta model Claude lewat prompt chat
+ */
+function resolveModelCascade(userMessage, configuredModel) {
+  const text = String(userMessage || '').toLowerCase();
+
+  // Jika user meminta Claude Opus di prompt
+  if (/\bclaude\s*opus\b/i.test(text) || (/\b(pakai|gunakan|pake|use|model|dengan|ganti)\b/i.test(text) && /\bopus\b/i.test(text))) {
+    const primary = 'ag/claude-opus-4-6-thinking';
+    return {
+      primaryModel: primary,
+      modelsToTry: [primary, ...CLAUDE_TIER_MODELS.filter(m => m !== primary)],
+      isClaudeOverride: true
+    };
+  }
+
+  // Jika user menyebut/meminta Claude di prompt
+  if (/\bclaude\b/i.test(text)) {
+    const primary = 'ag/claude-sonnet-4-6';
+    return {
+      primaryModel: primary,
+      modelsToTry: [primary, ...CLAUDE_TIER_MODELS.filter(m => m !== primary)],
+      isClaudeOverride: true
+    };
+  }
+
+  // Default: gunakan Gemini (5h) kasta tertinggi (ag/gemini-3-flash)
+  const cleanConfigModel = (configuredModel && configuredModel !== 'ag/gemini-3.8-flash')
+    ? configuredModel
+    : 'ag/gemini-3-flash';
+
+  const modelsToTry = [cleanConfigModel];
+  for (const fb of GEMINI_5H_TIER_MODELS) {
+    if (!modelsToTry.includes(fb)) {
+      modelsToTry.push(fb);
+    }
+  }
+
+  return {
+    primaryModel: cleanConfigModel,
+    modelsToTry,
+    isClaudeOverride: false
+  };
+}
+
+async function callChatWithRetryAndFallback({
+  targetUrl,
+  payload,
+  headers,
+  modelsToTry,
+  timeoutMs = 45000
+}) {
+  const candidateModels = Array.isArray(modelsToTry) && modelsToTry.length > 0
+    ? modelsToTry
+    : GEMINI_5H_TIER_MODELS;
+
+  let lastErr = null;
+
+  for (let mIdx = 0; mIdx < candidateModels.length; mIdx++) {
+    const currentModel = candidateModels[mIdx];
+    const requestPayload = { ...payload, model: currentModel };
+    // 9Router sudah melakukan rolling ke semua 5 akun secara internal.
+    // Jika masih gagal (503/429/timeout), retry 1x lalu turun ke kasta model di bawahnya.
+    const maxAttempts = mIdx === 0 ? 2 : 1;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const response = await axios.post(targetUrl, requestPayload, {
+          headers,
+          timeout: timeoutMs
+        });
+        return { response, usedModel: currentModel };
+      } catch (err) {
+        lastErr = err;
+        const statusCode = err.response?.status;
+        const errorData = err.response?.data?.error || err.response?.data;
+        const errMsg = typeof errorData === 'string' ? errorData : (errorData?.message || err.message);
+
+        const isRetryableOrOverload =
+          statusCode === 503 ||
+          statusCode === 429 ||
+          statusCode === 403 ||
+          statusCode === 404 ||
+          statusCode === 500 ||
+          statusCode === 502 ||
+          statusCode === 504 ||
+          err.code === 'ECONNABORTED' ||
+          (errMsg && /CAPACITY_EXHAUSTED|No capacity available|OVERLOADED|timeout|rate limit|quota/i.test(errMsg));
+
+        console.warn(`[OpenRouter Cascade] Kasta #${mIdx + 1} (${currentModel}) percobaan ${attempt}/${maxAttempts} gagal [${statusCode || err.code}]: ${String(errMsg).slice(0, 140)}`);
+
+        if (isRetryableOrOverload && attempt < maxAttempts) {
+          const waitMs = 2000;
+          console.log(`[OpenRouter Cascade] Menunggu ${waitMs}ms sebelum mencoba ulang ${currentModel}...`);
+          await new Promise(r => setTimeout(r, waitMs));
+          continue;
+        }
+
+        if (isRetryableOrOverload) {
+          if (mIdx + 1 < candidateModels.length) {
+            console.warn(`[OpenRouter Cascade] Seluruh akun pada model ${currentModel} sibuk/habis kuota. Turun 1 kasta ke: ${candidateModels[mIdx + 1]}`);
+          }
+          break;
+        }
+
+        throw err;
+      }
+    }
+  }
+
+  throw lastErr;
+}
+
 class OpenRouterService {
   constructor() {
     this.apiUrl = 'https://openrouter.ai/api/v1/chat/completions';
@@ -74,7 +208,10 @@ class OpenRouterService {
         ? effectiveBaseUrl
         : `${effectiveBaseUrl.replace(/\/+$/, '')}/chat/completions`;
 
-      const effectiveModel = model || 'ag/gemini-3.8-flash';
+      const { primaryModel: effectiveModel, modelsToTry, isClaudeOverride } = resolveModelCascade(userMessage, model);
+      if (isClaudeOverride) {
+        console.log(`[OpenRouter] Deteksi prompt Claude aktif -> menggunakan kasta Claude (${effectiveModel})`);
+      }
       const effectiveMaxTokens = parseInt(maxTokens, 10) || 4096;
       const effectiveTemp = typeof temperature === 'number' ? temperature : 0.7;
 
@@ -112,33 +249,33 @@ class OpenRouterService {
       let finalModel = effectiveModel;
       let lastUsage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
 
+      let hasExecutedTools = false;
+
       while (loopCount < 50) {
         loopCount++;
 
-        const response = await axios.post(
+        const { response, usedModel } = await callChatWithRetryAndFallback({
           targetUrl,
-          {
-            model: effectiveModel,
+          payload: {
             messages,
             tools: vpsTools.toolDefinitions,
             tool_choice: 'auto',
             max_tokens: effectiveMaxTokens,
             temperature: effectiveTemp
           },
-          {
-            headers: {
-              'Authorization': `Bearer ${apiKey.trim()}`,
-              'HTTP-Referer': 'https://github.com/Hermes-AI-VPS',
-              'X-Title': 'Hermes AI VPS Assistant',
-              'Content-Type': 'application/json'
-            },
-            timeout: 7200000 // 2 hours max timeout
-          }
-        );
+          headers: {
+            'Authorization': `Bearer ${apiKey.trim()}`,
+            'HTTP-Referer': 'https://github.com/Hermes-AI-VPS',
+            'X-Title': 'Hermes AI VPS Assistant',
+            'Content-Type': 'application/json'
+          },
+          modelsToTry,
+          timeoutMs: 45000
+        });
 
+        finalModel = usedModel;
         const choice = response.data?.choices?.[0];
         const msg = choice?.message;
-        finalModel = response.data?.model || effectiveModel;
         finishReason = choice?.finish_reason || 'stop';
 
         const usage = response.data?.usage || {
@@ -155,13 +292,14 @@ class OpenRouterService {
         this.totalUsage.callsCount++;
 
         if (msg?.tool_calls && msg.tool_calls.length > 0) {
+          hasExecutedTools = true;
           messages.push(msg); // Add assistant message with tool_calls
           for (const tc of msg.tool_calls) {
             const toolName = tc.function?.name;
             const toolArgs = tc.function?.arguments;
 
             if (typeof onProgress === 'function') {
-              onProgress(toolName, toolArgs);
+              onProgress(toolName, toolArgs, loopCount);
             }
 
             const toolResult = await vpsTools.executeTool(toolName, toolArgs);
@@ -177,8 +315,48 @@ class OpenRouterService {
             });
           }
         } else {
-          finalReplyText = msg?.content || '*(Selesai tanpa output teks)*';
+          finalReplyText = msg?.content?.trim() || '';
           break;
+        }
+      }
+
+      // If loop reached limit or model returned empty content after tools, generate a final summary
+      if (!finalReplyText || !finalReplyText.trim()) {
+        if (hasExecutedTools) {
+          try {
+            console.log('[Hermes AI] Meminta ringkasan akhir setelah eksekusi tools...');
+            messages.push({
+              role: 'user',
+              content: 'Semua operasi dan perintah di VPS telah selesai dijalankan. Berikan ringkasan laporan akhir yang rapi, ramah, dan terstruktur dalam bahasa Indonesia untuk user mengenai apa saja yang berhasil dieksekusi, status/URL hasil jika ada, dan catatan penting lainnya.'
+            });
+
+            const { response: summaryRes } = await callChatWithRetryAndFallback({
+              targetUrl,
+              payload: {
+                messages,
+                max_tokens: Math.min(effectiveMaxTokens, 2048),
+                temperature: effectiveTemp
+              },
+              headers: {
+                'Authorization': `Bearer ${apiKey.trim()}`,
+                'HTTP-Referer': 'https://github.com/Hermes-AI-VPS',
+                'X-Title': 'Hermes AI VPS Assistant',
+                'Content-Type': 'application/json'
+              },
+              modelsToTry: [finalModel, ...modelsToTry.filter(m => m !== finalModel)],
+              timeoutMs: 25000
+            });
+
+            finalReplyText = summaryRes.data?.choices?.[0]?.message?.content?.trim() || '';
+          } catch (sumErr) {
+            console.warn('[OpenRouter] Gagal meminta ringkasan otomatis:', sumErr.message);
+          }
+        }
+
+        if (!finalReplyText || !finalReplyText.trim()) {
+          finalReplyText = hasExecutedTools
+            ? `✅ Seluruh operasi di VPS telah selesai dieksekusi (${loopCount} langkah). Perintah sistem berhasil dijalankan.`
+            : '*(Selesai tanpa output teks)*';
         }
       }
 
@@ -228,13 +406,17 @@ class OpenRouterService {
 
       console.error('[OpenRouter Error]', statusCode, errorMessage);
 
-      let friendlyMsg = errorMessage;
+      let friendlyMsg = typeof errorMessage === 'object' ? (errorMessage.message || JSON.stringify(errorMessage)) : (errorMessage || 'Terjadi kesalahan internal pada layanan AI.');
       if (statusCode === 401) {
         friendlyMsg = 'API Key OpenRouter tidak valid atau kedaluwarsa. Periksa kembali API Key Anda di Web Dashboard.';
       } else if (statusCode === 402) {
         friendlyMsg = 'Saldo / Kredit token OpenRouter Anda tidak mencukupi (Insufficient Credits).';
       } else if (statusCode === 429) {
-        friendlyMsg = 'Terkena Rate Limit OpenRouter. Tunggu beberapa saat sebelum mengirim pesan lagi.';
+        friendlyMsg = 'Server model AI sedang sangat padat (Rate Limit). Coba kembali dalam beberapa saat.';
+      } else if (statusCode === 503) {
+        friendlyMsg = 'Server model AI sedang mengalami lonjakan kapasitas server (503 Capacity Exhausted). Seluruh upaya retry otomatis dan model cadangan telah dicoba. Silakan kirim ulang pesan Anda beberapa detik lagi.';
+      } else if (err.code === 'ECONNABORTED' || (err.message && err.message.includes('timeout'))) {
+        friendlyMsg = 'Waktu permintaan ke server model AI melebihi batas (Timeout). Silakan kirim ulang instruksi Anda.';
       }
 
       return {

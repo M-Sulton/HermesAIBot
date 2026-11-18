@@ -49,7 +49,7 @@ class DiscordService {
         partials: [Partials.Channel, Partials.Message]
       });
 
-      this.client.once('ready', () => {
+      this.client.once('clientReady', () => {
         this.status = {
           online: true,
           tag: this.client.user.tag,
@@ -139,6 +139,8 @@ class DiscordService {
           workingMsg = await message.reply('⏳ **Hermes sedang bekerja di VPS...** *(Memproses instruksi & mengecek sistem)*');
         } catch {}
 
+        let lastProgressTime = 0;
+
         try {
           const result = await openrouter.chat({
             apiKey: orConfig.apiKey,
@@ -149,30 +151,30 @@ class DiscordService {
             sessionKey,
             userMessage: prompt,
             baseUrl: orConfig.baseUrl,
-            onProgress: (toolName) => {
+            onProgress: (toolName, toolArgs, step) => {
               message.channel.sendTyping().catch(() => {});
-              if (workingMsg) {
+              const now = Date.now();
+              if (workingMsg && (now - lastProgressTime > 2500)) {
+                lastProgressTime = now;
+                const stepLabel = step ? `[Langkah #${step}] ` : '';
                 const desc = toolName === 'take_screenshot' ? '📸 Mengambil screenshot web...'
                   : toolName === 'run_shell_command' ? '⚙️ Mengeksekusi perintah terminal...'
                   : toolName === 'write_file' ? '📝 Menulis/membuat file di VPS...'
                   : toolName === 'read_file' ? '📖 Membaca file di VPS...'
                   : `⚡ Menjalankan ${toolName}...`;
-                workingMsg.edit(`⏳ **Hermes sedang bekerja:** ${desc}`).catch(() => {});
+                workingMsg.edit(`⏳ **Hermes ${stepLabel}sedang bekerja:** ${desc}`).catch(() => {});
               }
             }
           });
-
-          clearInterval(typingInterval);
-          if (workingMsg) {
-            await workingMsg.delete().catch(() => {});
-          }
 
           if (!result.success) {
             await message.reply(`⚠️ **Hermes AI Error:** ${result.error}`);
             return;
           }
 
-          const rawReply = result.reply || (result.attachments?.length ? '*(Aksi selesai)*' : '*(Tidak ada respons)*');
+          const rawReply = (result.reply && result.reply.trim())
+            ? result.reply
+            : (result.attachments?.length ? '*(Aksi selesai)*' : '*(Operasi di VPS telah selesai dijalankan)*');
           const chunks = this.splitMessage(rawReply, 1900);
           const hasFiles = result.attachments && result.attachments.length > 0;
 
@@ -190,12 +192,13 @@ class DiscordService {
             }
           }
         } catch (err) {
+          console.error('[Discord Message Handler Error]', err);
+          await message.reply(`Maaf, terjadi kesalahan: ${err.message}`).catch(() => {});
+        } finally {
           clearInterval(typingInterval);
           if (workingMsg) {
             await workingMsg.delete().catch(() => {});
           }
-          console.error('[Discord Message Handler Error]', err);
-          await message.reply(`Maaf, terjadi kesalahan: ${err.message}`).catch(() => {});
         }
       });
 

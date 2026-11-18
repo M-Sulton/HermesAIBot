@@ -285,6 +285,164 @@ app.post('/api/reset', (req, res) => {
   res.json({ success: true, message: 'Memori obrolan berhasil di-reset.' });
 });
 
+/**
+ * Restart individual bot connectors
+ */
+app.post('/api/bot/restart-telegram', async (req, res) => {
+  try {
+    console.log('[Server] Menerima permintaan restart Telegram bot...');
+    await telegramService.startBot(currentConfig);
+    res.json({
+      success: true,
+      message: 'Bot Telegram berhasil di-restart!',
+      telegram: telegramService.getStatus()
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: 'Gagal restart Telegram: ' + err.message });
+  }
+});
+
+app.post('/api/bot/restart-discord', async (req, res) => {
+  try {
+    console.log('[Server] Menerima permintaan restart Discord bot...');
+    await discordService.startBot(currentConfig);
+    res.json({
+      success: true,
+      message: 'Bot Discord berhasil di-restart!',
+      discord: discordService.getStatus()
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: 'Gagal restart Discord: ' + err.message });
+  }
+});
+
+/**
+ * Stop Telegram bot specifically
+ */
+app.post('/api/bot/stop-telegram', async (req, res) => {
+  try {
+    console.log('[Server] Menerima permintaan turn off Telegram bot...');
+    await telegramService.stopBot();
+    res.json({
+      success: true,
+      message: 'Bot Telegram berhasil di-turn off (dihentikan)!',
+      telegram: telegramService.getStatus()
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: 'Gagal stop Telegram: ' + err.message });
+  }
+});
+
+/**
+ * Stop Discord bot specifically
+ */
+app.post('/api/bot/stop-discord', async (req, res) => {
+  try {
+    console.log('[Server] Menerima permintaan turn off Discord bot...');
+    await discordService.stopBot();
+    res.json({
+      success: true,
+      message: 'Bot Discord berhasil di-turn off (dihentikan)!',
+      discord: discordService.getStatus()
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: 'Gagal stop Discord: ' + err.message });
+  }
+});
+
+/**
+ * Reset Telegram Token and hot-reload bot
+ */
+app.post('/api/bot/telegram/reset-token', async (req, res) => {
+  try {
+    const { token } = req.body;
+    if (!token || typeof token !== 'string') {
+      return res.status(400).json({ success: false, error: 'Token baru harus diisi' });
+    }
+    const cleanToken = token.trim();
+    if (!/^\d{8,11}:[A-Za-z0-9_-]{34,}$/.test(cleanToken)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Format token Telegram tidak valid (contoh format benar: 123456789:ABCDefgh-1234XYZ...)'
+      });
+    }
+
+    currentConfig.telegram = currentConfig.telegram || {};
+    currentConfig.telegram.botToken = cleanToken;
+    currentConfig.telegram.enabled = true;
+    saveConfig(currentConfig);
+
+    console.log('[Server] Telegram Bot Token berhasil direset via Web API, me-restart bot...');
+    await telegramService.startBot(currentConfig);
+
+    const tgStatus = telegramService.getStatus();
+    return res.json({
+      success: true,
+      message: 'Token Bot Telegram berhasil diperbarui dan bot langsung diaktifkan!',
+      telegram: tgStatus
+    });
+  } catch (err) {
+    console.error('[Reset Token Error]', err);
+    res.status(500).json({ success: false, error: 'Gagal mereset token: ' + err.message });
+  }
+});
+
+/**
+ * Reset Discord Token and hot-reload bot
+ */
+app.post('/api/bot/discord/reset-token', async (req, res) => {
+  try {
+    const { token } = req.body;
+    if (!token || typeof token !== 'string') {
+      return res.status(400).json({ success: false, error: 'Token Discord baru harus diisi' });
+    }
+    const cleanToken = token.trim();
+    if (cleanToken.length < 50) {
+      return res.status(400).json({
+        success: false,
+        error: 'Format token Discord tampak tidak valid (panjang token minimal 50 karakter)'
+      });
+    }
+
+    currentConfig.discord = currentConfig.discord || {};
+    currentConfig.discord.botToken = cleanToken;
+    currentConfig.discord.enabled = true;
+    saveConfig(currentConfig);
+
+    console.log('[Server] Discord Bot Token berhasil direset via Web API, me-restart bot...');
+    await discordService.startBot(currentConfig);
+
+    const dcStatus = discordService.getStatus();
+    return res.json({
+      success: true,
+      message: 'Token Bot Discord berhasil diperbarui dan bot langsung diaktifkan!',
+      discord: dcStatus
+    });
+  } catch (err) {
+    console.error('[Reset Discord Token Error]', err);
+    res.status(500).json({ success: false, error: 'Gagal mereset token Discord: ' + err.message });
+  }
+});
+
+app.post('/api/bot/restart-all', async (req, res) => {
+  try {
+    console.log('[Server] Menerima permintaan restart Semua Bot (Telegram & Discord)...');
+    await Promise.all([
+      telegramService.startBot(currentConfig),
+      discordService.startBot(currentConfig)
+    ]);
+    res.json({
+      success: true,
+      message: 'Semua bot (Telegram & Discord) berhasil di-restart!',
+      telegram: telegramService.getStatus(),
+      discord: discordService.getStatus()
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: 'Gagal restart bot: ' + err.message });
+  }
+});
+
+
 // Start Express Server
 const server = app.listen(PORT, () => {
   console.log(`====================================================`);
