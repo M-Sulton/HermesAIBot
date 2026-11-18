@@ -219,9 +219,12 @@ class OpenRouterService {
       const messages = [];
 
       if (systemPrompt && systemPrompt.trim()) {
+        const extraNote = isClaudeOverride
+          ? `\n\n[INFO ROUTER HERMES: Sistem router telah otomatis mengalihkan model aktif kamu saat ini ke ${effectiveModel} (Claude 4.6) sesuai permintaan user di prompt. Kamu TIDAK perlu mencari ANTHROPIC_API_KEY di terminal VPS; langsung kerjakan atau jawab instruksi user menggunakan modelmu saat ini.]`
+          : '';
         messages.push({
           role: 'system',
-          content: systemPrompt.trim()
+          content: systemPrompt.trim() + extraNote
         });
       }
 
