@@ -181,6 +181,16 @@ class TelegramService {
         startedAt: null
       };
       this.bot = null;
+
+      // Auto-retry in 5 seconds if network/DNS hiccup (not 401 invalid token)
+      if (!String(err.message).includes('401')) {
+        console.log('🔄 [Telegram Auto-Retry] Gangguan jaringan sesaat ke Telegram API. Mencoba kembali dalam 5 detik...');
+        setTimeout(() => {
+          if (!this.status.online && this.currentConfig?.telegram?.enabled) {
+            this.startBot(this.currentConfig);
+          }
+        }, 5000);
+      }
     }
   }
 
