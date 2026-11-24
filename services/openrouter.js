@@ -7,16 +7,15 @@ const vpsTools = require('./vpsTools');
 const statsFilePath = path.join(__dirname, '../data/token_stats.json');
 
 // Urutan Kasta Model Gemini (5h) dari kasta tertinggi ke bawah
-// 9Router akan me-rolling seluruh 5 akun Antigravity di tiap kasta sebelum turun ke kasta berikutnya
+// 9Router akan me-rolling seluruh akun Antigravity di tiap kasta sebelum turun ke kasta berikutnya
 const GEMINI_5H_TIER_MODELS = [
-  'ag/gemini-3-flash',            // Kasta 1 (Terbaik - Default Gemini 5h)
-  'ag/gemini-2.5-flash-thinking', // Kasta 2 (Gemini Flash Thinking)
-  'ag/gemini-2.5-flash',          // Kasta 3 (Gemini Flash Standard)
-  'ag/gemini-3.5-flash-lite',     // Kasta 4 (Gemini 3.5 Flash Lite - Sangat Cepat)
-  'ag/gemini-3.1-flash-lite',     // Kasta 5 (Gemini 3.1 Flash Lite)
-  'ag/gemini-3.8-flash',          // Kasta 6 (Gemini 3.8 Flash jika kapasitas pulih)
-  'cx/gpt-6-luna',                // Kasta 7 (Cadangan Codex Multi-Account)
-  'ag/claude-sonnet-4-6'          // Kasta 8 (Cadangan Claude)
+  'ag/gemini-3-flash',            // Kasta 1 (Default Gemini 5h)
+  'ag/gemini-3.8-flash-high',     // Kasta 2 (Gemini 3.8 Flash High)
+  'ag/gemini-3.8-flash',          // Kasta 3 (Gemini 3.8 Flash Standard)
+  'ag/gemini-3.8-flash-medium',   // Kasta 4 (Gemini 3.8 Flash Medium)
+  'ag/gemini-3.8-flash-low',      // Kasta 5 (Gemini 3.8 Flash Low)
+  'cx/gpt-6-luna',                // Kasta 6 (Cadangan Codex Multi-Account)
+  'ag/claude-sonnet-4-6'          // Kasta 7 (Cadangan Claude)
 ];
 
 // Urutan Kasta Model Claude (Aktif otomatis jika user meminta Claude di prompt)
